@@ -17,3 +17,7 @@ def compute_noptimal(
         if ((price - best_price) / best_price) * 100 <= max_slip_pct:
             total += float(vol)
     return total
+
+
+def compute_net_profit_pct(gross_pct: float, fees_pct: float, slip_pct: float) -> float:
+    return round(gross_pct - fees_pct - slip_pct, 6)
