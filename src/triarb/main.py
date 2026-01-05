@@ -10,6 +10,7 @@ from triarb.okx_ws import OKX_PUBLIC_WS_URL, fetch_one_okx_ticker
 from triarb.filters import should_signal
 from triarb.spread import compute_spread_pct
 from triarb.symbols import build_inst_id
+from triarb.triangle import TriangleQuotes, compute_triangle_net_pct
 
 
 def run_mock_pipeline() -> str | None:
@@ -97,3 +98,39 @@ async def run_okx_gate_spread_filtered(
     tasks = [asyncio.create_task(one(asset)) for asset in assets]
     rows = await asyncio.gather(*tasks)
     return [row for row in rows if row is not None]
+
+
+async def run_gate_triangle_filtered(
+    a_asset: str,
+    b_asset: str,
+    base: str,
+    fee_pct_per_trade: float,
+    slippage_pct_per_trade: float,
+    min_net_pct: float,
+    gate_url: str = GATE_PUBLIC_WS_URL,
+    fetch_gate=fetch_one_gate_book_ticker,
+) -> list[str]:
+    a_usdt = build_inst_id("gate", a_asset, base)
+    a_b = build_inst_id("gate", a_asset, b_asset)
+    b_usdt = build_inst_id("gate", b_asset, base)
+
+    async def safe_fetch(inst_id: str):
+        try:
+            return await fetch_gate(inst_id, url=gate_url)
+        except Exception:
+            return None
+
+    tasks = [asyncio.create_task(safe_fetch(sym)) for sym in (a_usdt, a_b, b_usdt)]
+    tickers = await asyncio.gather(*tasks)
+    if any(ticker is None for ticker in tickers):
+        return []
+    a_usdt_ticker, a_b_ticker, b_usdt_ticker = tickers
+    quotes = TriangleQuotes(
+        a_usdt_ask=a_usdt_ticker.ask_px,
+        a_b_bid=a_b_ticker.bid_px,
+        b_usdt_bid=b_usdt_ticker.bid_px,
+    )
+    net_pct = compute_triangle_net_pct(quotes, fee_pct_per_trade, slippage_pct_per_trade)
+    if net_pct < min_net_pct:
+        return []
+    return [f"{a_asset}->{b_asset}->{base} net_pct={round(net_pct, 2)}"]
