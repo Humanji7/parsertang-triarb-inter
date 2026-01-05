@@ -8,6 +8,7 @@ from triarb.feeder import mock_orderbook_depth
 from triarb.gate_ws import GATE_PUBLIC_WS_URL, fetch_one_gate_book_ticker
 from triarb.okx_ws import OKX_PUBLIC_WS_URL, fetch_one_okx_ticker
 from triarb.spread import compute_spread_pct
+from triarb.symbols import build_inst_id
 
 
 def run_mock_pipeline() -> str | None:
@@ -45,3 +46,23 @@ async def run_okx_gate_spread_sample(
     okx_ticker, gate_ticker = await asyncio.gather(okx_task, gate_task)
     spread_pct = compute_spread_pct(buy_ask=okx_ticker.ask_px, sell_bid=gate_ticker.bid_px)
     return f"{okx_ticker.inst_id}->{gate_ticker.inst_id} spread_pct={round(spread_pct, 4)}"
+
+
+async def run_okx_gate_spread_batch(
+    assets: list[str],
+    base: str,
+    okx_url: str = OKX_PUBLIC_WS_URL,
+    gate_url: str = GATE_PUBLIC_WS_URL,
+    fetch_okx=fetch_one_okx_ticker,
+    fetch_gate=fetch_one_gate_book_ticker,
+) -> list[str]:
+    async def one(asset: str) -> str:
+        okx_inst = build_inst_id("okx", asset, base)
+        gate_inst = build_inst_id("gate", asset, base)
+        okx_ticker = await fetch_okx(okx_inst, url=okx_url)
+        gate_ticker = await fetch_gate(gate_inst, url=gate_url)
+        spread_pct = compute_spread_pct(buy_ask=okx_ticker.ask_px, sell_bid=gate_ticker.bid_px)
+        return f"{okx_ticker.inst_id}->{gate_ticker.inst_id} spread_pct={round(spread_pct, 4)}"
+
+    tasks = [asyncio.create_task(one(asset)) for asset in assets]
+    return await asyncio.gather(*tasks)
