@@ -7,6 +7,7 @@ from triarb.evaluator import compute_net_profit_pct, compute_noptimal
 from triarb.feeder import mock_orderbook_depth
 from triarb.gate_ws import GATE_PUBLIC_WS_URL, fetch_one_gate_book_ticker
 from triarb.okx_ws import OKX_PUBLIC_WS_URL, fetch_one_okx_ticker
+from triarb.filters import should_signal
 from triarb.spread import compute_spread_pct
 from triarb.symbols import build_inst_id
 
@@ -66,3 +67,33 @@ async def run_okx_gate_spread_batch(
 
     tasks = [asyncio.create_task(one(asset)) for asset in assets]
     return await asyncio.gather(*tasks)
+
+
+async def run_okx_gate_spread_filtered(
+    assets: list[str],
+    base: str,
+    fee_pct: float,
+    slippage_pct: float,
+    min_net_pct: float,
+    okx_url: str = OKX_PUBLIC_WS_URL,
+    gate_url: str = GATE_PUBLIC_WS_URL,
+    fetch_okx=fetch_one_okx_ticker,
+    fetch_gate=fetch_one_gate_book_ticker,
+) -> list[str]:
+    async def one(asset: str) -> str | None:
+        try:
+            okx_inst = build_inst_id("okx", asset, base)
+            gate_inst = build_inst_id("gate", asset, base)
+            okx_ticker = await fetch_okx(okx_inst, url=okx_url)
+            gate_ticker = await fetch_gate(gate_inst, url=gate_url)
+            spread_pct = compute_spread_pct(buy_ask=okx_ticker.ask_px, sell_bid=gate_ticker.bid_px)
+        except Exception:
+            return None
+        if not should_signal(spread_pct, fee_pct, slippage_pct, min_net_pct):
+            return None
+        net_pct = round(spread_pct - fee_pct - slippage_pct, 4)
+        return f"{okx_ticker.inst_id}->{gate_ticker.inst_id} net_pct={net_pct}"
+
+    tasks = [asyncio.create_task(one(asset)) for asset in assets]
+    rows = await asyncio.gather(*tasks)
+    return [row for row in rows if row is not None]
