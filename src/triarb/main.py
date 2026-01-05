@@ -283,3 +283,91 @@ async def run_gate_triangle_filtered_ws(
     if net_pct < min_net_pct:
         return []
     return [f"{a_asset}->{bridge_asset}->{base} net_pct={round(net_pct, 2)}"]
+
+
+async def run_gate_triangle_batch_bridge_ws(
+    assets: list[str],
+    base: str,
+    bridge: str,
+    fee_pct_per_trade: float,
+    slippage_pct_per_trade: float,
+    min_net_pct: float,
+    gate_url: str = GATE_PUBLIC_WS_URL,
+    timeout_s: float = 5.0,
+) -> list[str]:
+    rows: list[str] = []
+    for asset in assets:
+        rows.extend(
+            await run_gate_triangle_filtered_ws(
+                a_asset=asset,
+                bridge_asset=bridge,
+                base=base,
+                fee_pct_per_trade=fee_pct_per_trade,
+                slippage_pct_per_trade=slippage_pct_per_trade,
+                min_net_pct=min_net_pct,
+                gate_url=gate_url,
+                timeout_s=timeout_s,
+            )
+        )
+    return rows
+
+
+async def run_gate_triangle_batch_bridge_ws_bulk(
+    assets: list[str],
+    base: str,
+    bridge: str,
+    fee_pct_per_trade: float,
+    slippage_pct_per_trade: float,
+    min_net_pct: float,
+    gate_url: str = GATE_PUBLIC_WS_URL,
+    timeout_s: float = 5.0,
+    overall_timeout_s: float | None = None,
+    chunk_size: int | None = None,
+    fetch_gate_multi=fetch_gate_book_tickers,
+) -> list[str]:
+    assets_upper = [asset.upper() for asset in assets]
+    bridge_upper = bridge.upper()
+    base_upper = base.upper()
+    rows: list[str] = []
+    if chunk_size is None or chunk_size <= 0:
+        chunks = [assets_upper]
+    else:
+        chunks = [assets_upper[i : i + chunk_size] for i in range(0, len(assets_upper), chunk_size)]
+
+    for chunk in chunks:
+        inst_ids: list[str] = []
+        for asset in chunk:
+            inst_ids.append(build_inst_id("gate", asset, base_upper))
+            inst_ids.append(build_inst_id("gate", asset, bridge_upper))
+        inst_ids.append(build_inst_id("gate", bridge_upper, base_upper))
+        inst_ids = list(dict.fromkeys(inst_ids))
+
+        try:
+            tickers = await asyncio.wait_for(
+                fetch_gate_multi(
+                    inst_ids,
+                    url=gate_url,
+                    timeout_s=timeout_s,
+                    allow_partial=True,
+                ),
+                timeout=overall_timeout_s or timeout_s,
+            )
+        except asyncio.TimeoutError:
+            continue
+
+        for asset in chunk:
+            a_usdt = build_inst_id("gate", asset, base_upper)
+            a_bridge = build_inst_id("gate", asset, bridge_upper)
+            bridge_usdt = build_inst_id("gate", bridge_upper, base_upper)
+            if a_usdt not in tickers or a_bridge not in tickers or bridge_usdt not in tickers:
+                continue
+            quotes = TriangleQuotes(
+                a_usdt_ask=tickers[a_usdt].ask_px,
+                a_b_bid=tickers[a_bridge].bid_px,
+                b_usdt_bid=tickers[bridge_usdt].bid_px,
+            )
+            net_pct = compute_triangle_net_pct(quotes, fee_pct_per_trade, slippage_pct_per_trade)
+            if net_pct < min_net_pct:
+                continue
+            rows.append(f"{asset}->{bridge_upper}->{base_upper} net_pct={round(net_pct, 2)}")
+    return rows

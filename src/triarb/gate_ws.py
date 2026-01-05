@@ -76,6 +76,7 @@ async def fetch_gate_book_tickers(
     inst_ids: list[str],
     url: str = GATE_PUBLIC_WS_URL,
     timeout_s: float = 5.0,
+    allow_partial: bool = False,
 ) -> dict[str, BookTicker]:
     try:
         import websockets
@@ -91,8 +92,19 @@ async def fetch_gate_book_tickers(
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
+                if allow_partial:
+                    return results
                 raise TimeoutError("Gate book tickers timeout")
-            raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
+            try:
+                raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
+            except asyncio.TimeoutError:
+                if allow_partial:
+                    return results
+                raise
+            except Exception:
+                if allow_partial:
+                    return results
+                raise
             try:
                 message = json.loads(raw)
             except json.JSONDecodeError:
