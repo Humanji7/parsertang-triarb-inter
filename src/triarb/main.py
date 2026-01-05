@@ -112,6 +112,7 @@ async def run_gate_triangle_filtered(
     slippage_pct_per_trade: float,
     min_net_pct: float,
     timeout_s: float | None = None,
+    fetch_semaphore: asyncio.Semaphore | None = None,
     gate_url: str = GATE_PUBLIC_WS_URL,
     fetch_gate=fetch_one_gate_book_ticker,
     on_error=None,
@@ -122,9 +123,20 @@ async def run_gate_triangle_filtered(
 
     async def safe_fetch(inst_id: str):
         try:
-            if timeout_s is None:
-                return await fetch_gate(inst_id, url=gate_url)
-            return await fetch_gate(inst_id, url=gate_url, timeout_s=timeout_s)
+            if fetch_semaphore is None:
+                if timeout_s is None:
+                    return await fetch_gate(inst_id, url=gate_url)
+                return await asyncio.wait_for(
+                    fetch_gate(inst_id, url=gate_url, timeout_s=timeout_s),
+                    timeout=timeout_s,
+                )
+            async with fetch_semaphore:
+                if timeout_s is None:
+                    return await fetch_gate(inst_id, url=gate_url)
+                return await asyncio.wait_for(
+                    fetch_gate(inst_id, url=gate_url, timeout_s=timeout_s),
+                    timeout=timeout_s,
+                )
         except Exception as exc:
             if on_error is not None:
                 on_error(inst_id, exc)
@@ -155,6 +167,7 @@ async def run_gate_triangle_batch(
     available_pairs: set[str] | None = None,
     max_triangles: int | None = None,
     timeout_s: float | None = None,
+    concurrency_limit: int | None = None,
     gate_url: str = GATE_PUBLIC_WS_URL,
     fetch_gate=fetch_one_gate_book_ticker,
     on_error=None,
@@ -167,21 +180,26 @@ async def run_gate_triangle_batch(
     if max_triangles is not None:
         candidates = candidates[: max_triangles]
     rows: list[str] = []
-    for a_asset, b_asset in candidates:
-        rows.extend(
-            await run_gate_triangle_filtered(
-                a_asset=a_asset,
-                b_asset=b_asset,
-                base=base,
-                fee_pct_per_trade=fee_pct_per_trade,
-                slippage_pct_per_trade=slippage_pct_per_trade,
-                min_net_pct=min_net_pct,
-                timeout_s=timeout_s,
-                gate_url=gate_url,
-                fetch_gate=fetch_gate,
-                on_error=on_error,
-            )
+    fetch_semaphore = asyncio.Semaphore(concurrency_limit) if concurrency_limit else None
+
+    async def one(a_asset: str, b_asset: str) -> list[str]:
+        return await run_gate_triangle_filtered(
+            a_asset=a_asset,
+            b_asset=b_asset,
+            base=base,
+            fee_pct_per_trade=fee_pct_per_trade,
+            slippage_pct_per_trade=slippage_pct_per_trade,
+            min_net_pct=min_net_pct,
+            timeout_s=timeout_s,
+            fetch_semaphore=fetch_semaphore,
+            gate_url=gate_url,
+            fetch_gate=fetch_gate,
+            on_error=on_error,
         )
+
+    tasks = [asyncio.create_task(one(a_asset, b_asset)) for a_asset, b_asset in candidates]
+    for result in await asyncio.gather(*tasks):
+        rows.extend(result)
     return rows
 
 
@@ -195,6 +213,7 @@ async def run_gate_triangle_batch_bridge(
     available_pairs: set[str] | None = None,
     max_triangles: int | None = None,
     timeout_s: float | None = None,
+    concurrency_limit: int | None = None,
     gate_url: str = GATE_PUBLIC_WS_URL,
     fetch_gate=fetch_one_gate_book_ticker,
     on_error=None,
@@ -212,19 +231,24 @@ async def run_gate_triangle_batch_bridge(
     if max_triangles is not None:
         candidates = candidates[: max_triangles]
     rows: list[str] = []
-    for a_asset, bridge_asset in candidates:
-        rows.extend(
-            await run_gate_triangle_filtered(
-                a_asset=a_asset,
-                b_asset=bridge_asset,
-                base=base,
-                fee_pct_per_trade=fee_pct_per_trade,
-                slippage_pct_per_trade=slippage_pct_per_trade,
-                min_net_pct=min_net_pct,
-                timeout_s=timeout_s,
-                gate_url=gate_url,
-                fetch_gate=fetch_gate,
-                on_error=on_error,
-            )
+    fetch_semaphore = asyncio.Semaphore(concurrency_limit) if concurrency_limit else None
+
+    async def one(a_asset: str, bridge_asset: str) -> list[str]:
+        return await run_gate_triangle_filtered(
+            a_asset=a_asset,
+            b_asset=bridge_asset,
+            base=base,
+            fee_pct_per_trade=fee_pct_per_trade,
+            slippage_pct_per_trade=slippage_pct_per_trade,
+            min_net_pct=min_net_pct,
+            timeout_s=timeout_s,
+            fetch_semaphore=fetch_semaphore,
+            gate_url=gate_url,
+            fetch_gate=fetch_gate,
+            on_error=on_error,
         )
+
+    tasks = [asyncio.create_task(one(a_asset, bridge_asset)) for a_asset, bridge_asset in candidates]
+    for result in await asyncio.gather(*tasks):
+        rows.extend(result)
     return rows
