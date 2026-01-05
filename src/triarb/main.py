@@ -11,6 +11,10 @@ from triarb.filters import should_signal
 from triarb.spread import compute_spread_pct
 from triarb.symbols import build_inst_id
 from triarb.triangle import TriangleQuotes, compute_triangle_net_pct
+from triarb.triangle_candidates import (
+    build_gate_triangle_candidates,
+    build_gate_triangle_candidates_with_bridge,
+)
 
 
 def run_mock_pipeline() -> str | None:
@@ -107,8 +111,10 @@ async def run_gate_triangle_filtered(
     fee_pct_per_trade: float,
     slippage_pct_per_trade: float,
     min_net_pct: float,
+    timeout_s: float | None = None,
     gate_url: str = GATE_PUBLIC_WS_URL,
     fetch_gate=fetch_one_gate_book_ticker,
+    on_error=None,
 ) -> list[str]:
     a_usdt = build_inst_id("gate", a_asset, base)
     a_b = build_inst_id("gate", a_asset, b_asset)
@@ -116,8 +122,12 @@ async def run_gate_triangle_filtered(
 
     async def safe_fetch(inst_id: str):
         try:
-            return await fetch_gate(inst_id, url=gate_url)
-        except Exception:
+            if timeout_s is None:
+                return await fetch_gate(inst_id, url=gate_url)
+            return await fetch_gate(inst_id, url=gate_url, timeout_s=timeout_s)
+        except Exception as exc:
+            if on_error is not None:
+                on_error(inst_id, exc)
             return None
 
     tasks = [asyncio.create_task(safe_fetch(sym)) for sym in (a_usdt, a_b, b_usdt)]
@@ -134,3 +144,87 @@ async def run_gate_triangle_filtered(
     if net_pct < min_net_pct:
         return []
     return [f"{a_asset}->{b_asset}->{base} net_pct={round(net_pct, 2)}"]
+
+
+async def run_gate_triangle_batch(
+    assets: list[str],
+    base: str,
+    fee_pct_per_trade: float,
+    slippage_pct_per_trade: float,
+    min_net_pct: float,
+    available_pairs: set[str] | None = None,
+    max_triangles: int | None = None,
+    timeout_s: float | None = None,
+    gate_url: str = GATE_PUBLIC_WS_URL,
+    fetch_gate=fetch_one_gate_book_ticker,
+    on_error=None,
+) -> list[str]:
+    if available_pairs is not None:
+        candidates = build_gate_triangle_candidates(assets, base=base, available_pairs=available_pairs)
+    else:
+        assets_upper = [asset.upper() for asset in assets]
+        candidates = [(a, b) for a in assets_upper for b in assets_upper if a != b]
+    if max_triangles is not None:
+        candidates = candidates[: max_triangles]
+    rows: list[str] = []
+    for a_asset, b_asset in candidates:
+        rows.extend(
+            await run_gate_triangle_filtered(
+                a_asset=a_asset,
+                b_asset=b_asset,
+                base=base,
+                fee_pct_per_trade=fee_pct_per_trade,
+                slippage_pct_per_trade=slippage_pct_per_trade,
+                min_net_pct=min_net_pct,
+                timeout_s=timeout_s,
+                gate_url=gate_url,
+                fetch_gate=fetch_gate,
+                on_error=on_error,
+            )
+        )
+    return rows
+
+
+async def run_gate_triangle_batch_bridge(
+    assets: list[str],
+    base: str,
+    bridge: str,
+    fee_pct_per_trade: float,
+    slippage_pct_per_trade: float,
+    min_net_pct: float,
+    available_pairs: set[str] | None = None,
+    max_triangles: int | None = None,
+    timeout_s: float | None = None,
+    gate_url: str = GATE_PUBLIC_WS_URL,
+    fetch_gate=fetch_one_gate_book_ticker,
+    on_error=None,
+) -> list[str]:
+    if available_pairs is None:
+        assets_upper = [asset.upper() for asset in assets]
+        candidates = [(a, bridge.upper()) for a in assets_upper if a != bridge.upper()]
+    else:
+        candidates = build_gate_triangle_candidates_with_bridge(
+            assets=assets,
+            base=base,
+            bridge=bridge,
+            available_pairs=available_pairs,
+        )
+    if max_triangles is not None:
+        candidates = candidates[: max_triangles]
+    rows: list[str] = []
+    for a_asset, bridge_asset in candidates:
+        rows.extend(
+            await run_gate_triangle_filtered(
+                a_asset=a_asset,
+                b_asset=bridge_asset,
+                base=base,
+                fee_pct_per_trade=fee_pct_per_trade,
+                slippage_pct_per_trade=slippage_pct_per_trade,
+                min_net_pct=min_net_pct,
+                timeout_s=timeout_s,
+                gate_url=gate_url,
+                fetch_gate=fetch_gate,
+                on_error=on_error,
+            )
+        )
+    return rows
