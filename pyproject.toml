@@ -1,0 +1,10 @@
+[project]
+name = "parsertang-triarb-inter"
+version = "0.1.0"
+requires-python = ">=3.11,<3.15"
+dependencies = [
+  "pydantic-settings>=2.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
