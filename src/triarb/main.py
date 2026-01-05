@@ -5,7 +5,7 @@ import asyncio
 from triarb.alerts import format_signal
 from triarb.evaluator import compute_net_profit_pct, compute_noptimal
 from triarb.feeder import mock_orderbook_depth
-from triarb.gate_ws import GATE_PUBLIC_WS_URL, fetch_one_gate_book_ticker
+from triarb.gate_ws import GATE_PUBLIC_WS_URL, fetch_gate_book_tickers, fetch_one_gate_book_ticker
 from triarb.okx_ws import OKX_PUBLIC_WS_URL, fetch_one_okx_ticker
 from triarb.filters import should_signal
 from triarb.spread import compute_spread_pct
@@ -252,3 +252,34 @@ async def run_gate_triangle_batch_bridge(
     for result in await asyncio.gather(*tasks):
         rows.extend(result)
     return rows
+
+
+async def run_gate_triangle_filtered_ws(
+    a_asset: str,
+    bridge_asset: str,
+    base: str,
+    fee_pct_per_trade: float,
+    slippage_pct_per_trade: float,
+    min_net_pct: float,
+    gate_url: str = GATE_PUBLIC_WS_URL,
+    timeout_s: float = 5.0,
+) -> list[str]:
+    a_usdt = build_inst_id("gate", a_asset, base)
+    a_bridge = build_inst_id("gate", a_asset, bridge_asset)
+    bridge_usdt = build_inst_id("gate", bridge_asset, base)
+    tickers = await fetch_gate_book_tickers(
+        [a_usdt, a_bridge, bridge_usdt],
+        url=gate_url,
+        timeout_s=timeout_s,
+    )
+    if len(tickers) != 3:
+        return []
+    quotes = TriangleQuotes(
+        a_usdt_ask=tickers[a_usdt].ask_px,
+        a_b_bid=tickers[a_bridge].bid_px,
+        b_usdt_bid=tickers[bridge_usdt].bid_px,
+    )
+    net_pct = compute_triangle_net_pct(quotes, fee_pct_per_trade, slippage_pct_per_trade)
+    if net_pct < min_net_pct:
+        return []
+    return [f"{a_asset}->{bridge_asset}->{base} net_pct={round(net_pct, 2)}"]
